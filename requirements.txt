@@ -11,3 +11,5 @@ langchain_ollama
 langchain_community
 python-dotenv
 twilio
+langchain-google-genai 
+langchain-anthropic
