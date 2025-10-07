@@ -5,7 +5,6 @@ from src.nodes.basic_chatbot_node import BasicChatbotNode
 from src.tools.search_tool import get_tools, create_tool_node
 from langgraph.prebuilt import tools_condition
 from src.nodes.chatbot_with_tool_node import ChatbotWithToolNode
-from langgraph.checkpoint.memory import MemorySaver
 
 
 class GraphBuilder:
@@ -25,26 +24,6 @@ class GraphBuilder:
         self.graph_builder.add_node("chatbot", self.basic_chatbot_node.process)
         self.graph_builder.add_edge(START, "chatbot")
         self.graph_builder.add_edge("chatbot", END)
-
-    def human_approval_required(self, state: State) -> str:
-        """
-        Determines if human approval is needed based on the tool being called.
-        Returns 'human_approval' for sensitive tools, 'tools' for auto-approved tools.
-        """
-        messages = state["messages"]
-        last_message = messages[-1]
-        
-        # Check if there are tool calls
-        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            for tool_call in last_message.tool_calls:
-                tool_name = tool_call.get("name", "")
-                
-                # Only WhatsApp messages require human approval
-                if tool_name == "send_whatsapp_message":
-                    return "human_approval"
-        
-        # Auto-approve all other tools (web_search, etc.)
-        return "tools"
 
     def chatbot_with_tools_build_graph(self):
         """
@@ -115,7 +94,11 @@ class GraphBuilder:
         
         Args:
             usecase: The use case to build ("Basic Chatbot" or "Chatbot With Web")
-            checkpointer: Memory checkpointer for human-in-the-loop (default: MemorySaver)
+            checkpointer: Checkpointer for persistence (MemorySaver for in-memory, 
+                         RedisSaver for Redis persistence)
+        
+        Returns:
+            Compiled graph with checkpointing enabled
         """
         if usecase == "Basic Chatbot":
             self.basic_chatbot_build_graph()
@@ -124,12 +107,15 @@ class GraphBuilder:
         if usecase == "Chatbot With Web":
             self.chatbot_with_tools_build_graph()
             
-            # Use provided checkpointer or create new one
             if checkpointer is None:
-                checkpointer = MemorySaver()
+                print("⚠️ No checkpointer provided, memory will not persist")
+                return self.graph_builder.compile()
             
             # Compile with checkpointer and interrupt only before human_approval node
-            # This enables selective human-in-the-loop
+            # This enables:
+            # 1. Persistent conversation memory across sessions (Redis)
+            # 2. Selective human-in-the-loop for WhatsApp messages
+            print(f"✅ Compiling graph with {type(checkpointer).__name__}")
             return self.graph_builder.compile(
                 checkpointer=checkpointer,
                 interrupt_before=["human_approval"]  # Only interrupt for WhatsApp

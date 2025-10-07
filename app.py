@@ -3,7 +3,7 @@ from src.graph.graph_builder import GraphBuilder
 from src.state.state import State
 from src.LLMs.ollama_llm import LlamaOllamaLLM
 from src.LLMs.groq_llm import GroqLLM
-from langgraph.checkpoint.memory import MemorySaver
+from src.checkpoint.redis_checkpoint import RedisCheckpointer
 
 # Page configuration
 st.set_page_config(
@@ -11,6 +11,12 @@ st.set_page_config(
     page_icon="🤖",
     layout="centered"
 )
+
+# Initialize Redis checkpointer (singleton)
+@st.cache_resource
+def get_redis_checkpointer():
+    """Initialize and cache Redis checkpointer"""
+    return RedisCheckpointer().get_checkpointer()
 
 # Initialize session state
 if "messages" not in st.session_state:
@@ -37,17 +43,22 @@ if "thread_id" not in st.session_state:
 if "pending_approval" not in st.session_state:
     st.session_state.pending_approval = None
 
-if "checkpointer" not in st.session_state:
-    st.session_state.checkpointer = MemorySaver()
-
 # Sidebar for configuration
 with st.sidebar:
     st.title("⚙️ Configuration")
     
+    # Thread ID input for conversation persistence
+    thread_id = st.text_input(
+        "Thread ID",
+        value=st.session_state.thread_id,
+        help="Unique identifier for this conversation thread. Change to start a new conversation."
+    )
+    st.session_state.thread_id = thread_id
+    
     # LLM Provider selection
     llm_provider = st.selectbox(
         "Select LLM Provider",
-        [ "Groq","Ollama"],
+        ["Groq", "Ollama"],
         help="Choose between Ollama (local) or Groq (API)"
     )
     
@@ -68,7 +79,9 @@ with st.sidebar:
         )
         model_name = st.selectbox(
             "Groq Model",
-            ["openai/gpt-oss-120b","openai/gpt-oss-20b","qwen/qwen3-32b","llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it"],
+            ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3-32b", 
+             "llama-3.3-70b-versatile", "llama-3.1-70b-versatile", 
+             "mixtral-8x7b-32768", "gemma2-9b-it"],
             help="Select a Groq model"
         )
     
@@ -92,7 +105,10 @@ with st.sidebar:
                         llm = GroqLLM(model_name, groq_api_key)
                     
                     builder = GraphBuilder(llm)
-                    graph = builder.setup_graph(usecase, st.session_state.checkpointer)
+                    
+                    # Get Redis checkpointer
+                    checkpointer = get_redis_checkpointer()
+                    graph = builder.setup_graph(usecase, checkpointer)
                     
                     st.session_state.graph = graph
                     st.session_state.usecase = usecase
@@ -102,6 +118,7 @@ with st.sidebar:
                         st.session_state.groq_api_key = groq_api_key
                     
                     st.success(f"✅ {usecase} initialized successfully with {llm_provider}!")
+                    st.info("💾 Using Redis for persistent memory")
         except Exception as e:
             st.error(f"❌ Error initializing chatbot: {str(e)}")
             st.exception(e)
@@ -113,19 +130,70 @@ with st.sidebar:
         st.info(f"**Provider:** {st.session_state.llm_provider}")
         st.info(f"**Mode:** {st.session_state.usecase}")
         st.info(f"**Model:** {st.session_state.llm_model}")
+        st.info(f"**Thread:** {st.session_state.thread_id}")
     else:
         st.warning("**Status:** Not initialized")
     
-    # Clear chat button
+    # Load conversation history button
     st.divider()
-    if st.button("Clear Chat History"):
+    if st.button("🔄 Load Conversation History"):
+        if st.session_state.graph is not None:
+            try:
+                config = {"configurable": {"thread_id": st.session_state.thread_id}}
+                snapshot = st.session_state.graph.get_state(config)
+                
+                if snapshot.values and snapshot.values.get("messages"):
+                    # Clear current messages
+                    st.session_state.messages = []
+                    
+                    # Load messages from Redis
+                    for msg in snapshot.values["messages"]:
+                        if isinstance(msg, dict):
+                            role = msg.get("role", "assistant")
+                            content = msg.get("content", "")
+                        elif hasattr(msg, "type"):
+                            role = "user" if msg.type == "human" else "assistant"
+                            content = msg.content if hasattr(msg, "content") else str(msg)
+                        else:
+                            continue
+                        
+                        if content and role in ["user", "assistant"]:
+                            st.session_state.messages.append({
+                                "role": role,
+                                "content": content
+                            })
+                    
+                    st.success(f"✅ Loaded {len(st.session_state.messages)} messages")
+                    st.rerun()
+                else:
+                    st.info("No conversation history found for this thread")
+            except Exception as e:
+                st.error(f"Error loading history: {str(e)}")
+        else:
+            st.warning("Please initialize the chatbot first")
+    
+    # Clear chat button
+    if st.button("🗑️ Clear Chat History"):
         st.session_state.messages = []
         st.session_state.pending_approval = None
+        
+        # Also clear from Redis
+        if st.session_state.graph is not None:
+            try:
+                config = {"configurable": {"thread_id": st.session_state.thread_id}}
+                st.session_state.graph.update_state(
+                    config,
+                    {"messages": []},
+                    as_node="chatbot"
+                )
+            except:
+                pass
+        
         st.rerun()
 
 # Main chat interface
 st.title("🤖 LangGraph Chatbot")
-st.caption("WhatsApp messages require approval • Web searches auto-execute")
+st.caption("WhatsApp messages require approval • Web searches auto-execute • 💾 Redis-powered memory")
 
 # Check if graph is initialized
 if st.session_state.graph is None:
@@ -307,4 +375,4 @@ else:
                 st.exception(e)
 
 st.divider()
-st.caption("Built with Streamlit, LangGraph, Ollama, and Groq | Selective HITL Enabled 🔒")
+st.caption("Built with Streamlit, LangGraph, Ollama, and Groq | Redis Memory • Selective HITL 🔒")

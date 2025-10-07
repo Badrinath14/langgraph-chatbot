@@ -13,3 +13,5 @@ python-dotenv
 twilio
 langchain-google-genai 
 langchain-anthropic
+langgraph-checkpoint-redis
+redis
