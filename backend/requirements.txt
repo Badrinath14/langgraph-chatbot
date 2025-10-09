@@ -15,3 +15,5 @@ langchain-google-genai
 langchain-anthropic
 langgraph-checkpoint-redis
 redis
+fastapi
+uvicorn
